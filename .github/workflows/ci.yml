@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "feature/**"
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  pr-policy:
+    name: Pull request policy
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || startsWith(github.ref_name, 'feature/')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate PR metadata
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_COMMIT_COUNT: ${{ github.event.pull_request.commits }}
+        run: bash .github/scripts/validate-pr-metadata.sh
+
+      - name: Validate PR metadata from branch
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          metadata="$(gh pr view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json title,body,commits)"
+          PR_TITLE="$(jq -r '.title' <<< "${metadata}")"
+          PR_BODY="$(jq -r '.body // ""' <<< "${metadata}")"
+          PR_COMMIT_COUNT="$(jq '.commits | length' <<< "${metadata}")"
+          export PR_TITLE PR_BODY PR_COMMIT_COUNT
+          bash .github/scripts/validate-pr-metadata.sh
+
+  rust:
+    name: Rust quality gate
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: never
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run repository policy lint
+        run: |
+          target="$(rustc -vV | sed -n 's/^host: //p')"
+          cargo run --manifest-path tools/source-lint/Cargo.toml --target "${target}" -- architecture src
+          cargo run --manifest-path tools/source-lint/Cargo.toml --target "${target}" -- docs-language
+
+      - name: Install actionlint
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
+
+      - name: Lint workflows
+        run: actionlint -color=false .github/workflows/ci.yml .github/workflows/release.yml
+
+      - name: Check formatting
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path tools/source-lint/Cargo.toml -- --check
+
+      - name: Run Clippy
+        run: |
+          target="$(rustc -vV | sed -n 's/^host: //p')"
+          cargo clippy --target "${target}" --all-targets --all-features -- -D warnings
+          cargo clippy --manifest-path tools/source-lint/Cargo.toml --target "${target}" --all-targets -- -D warnings
+
+      - name: Run source guideline lint
+        run: |
+          target="$(rustc -vV | sed -n 's/^host: //p')"
+          cargo run --manifest-path tools/source-lint/Cargo.toml --target "${target}" -- source src
+
+      - name: Check compilation
+        run: |
+          target="$(rustc -vV | sed -n 's/^host: //p')"
+          cargo check --target "${target}" --all-targets --all-features
+
+      - name: Run tests
+        run: |
+          set -o pipefail
+          target="$(rustc -vV | sed -n 's/^host: //p')"
+          cargo test --target "${target}" --all-targets --all-features 2>&1 | tee test-report.txt
+          cargo test --manifest-path tools/source-lint/Cargo.toml --target "${target}" 2>&1 | tee -a test-report.txt
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Enforce coverage gate
+        run: |
+          set -o pipefail
+          target="$(rustc -vV | sed -n 's/^host: //p')"
+          cargo llvm-cov --target "${target}" --all-targets --all-features --fail-under-lines 95 2>&1 | tee coverage-report.txt
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Audit dependencies
+        run: |
+          cargo deny check
+          cargo deny --manifest-path tools/source-lint/Cargo.toml check --config tools/source-lint/deny.toml
+
+      - name: Install cargo-machete
+        run: cargo install cargo-machete --locked
+
+      - name: Detect unused dependencies
+        run: cargo machete
+
+      - name: Comment PR test and coverage report
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/comment-pr-report.sh

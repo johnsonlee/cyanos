@@ -1,0 +1,226 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release-policy:
+    name: Release policy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Require matching version tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          test "${GITHUB_REF_NAME}" = "v${version}"
+
+      - name: Require Homebrew tap token
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: test -n "${HOMEBREW_TAP_TOKEN}"
+
+  quality:
+    name: Release quality gate
+    needs: release-policy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Install cargo-machete
+        run: cargo install cargo-machete --locked
+
+      - name: Install actionlint
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
+
+      - name: Run release verification
+        run: make verify
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: quality
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build executable
+        run: cargo build --release --locked --target "${{ matrix.target }}"
+
+      - name: Package executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="cyanos-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "dist/${package}"
+          install -m 0755 "target/${{ matrix.target }}/release/cyanos" "dist/${package}/cyanos"
+          cp README.md LICENSE "dist/${package}/"
+          tar -czf "dist/${package}.tar.gz" -C "dist/${package}" .
+          shasum -a 256 "dist/${package}.tar.gz" > "dist/${package}.tar.gz.sha256"
+
+      - name: Upload packaged executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      darwin_arm_url: ${{ steps.homebrew.outputs.darwin_arm_url }}
+      darwin_arm_sha: ${{ steps.homebrew.outputs.darwin_arm_sha }}
+      darwin_x86_url: ${{ steps.homebrew.outputs.darwin_x86_url }}
+      darwin_x86_sha: ${{ steps.homebrew.outputs.darwin_x86_sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download executable artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="cyanos-source-${GITHUB_REF_NAME}.tar.gz"
+          git archive --format=tar.gz --prefix="cyanos-${GITHUB_REF_NAME}/" -o "dist/${archive}" "${GITHUB_SHA}"
+          sha="$(shasum -a 256 "dist/${archive}" | awk '{print $1}')"
+          echo "${sha}  ${archive}" > "dist/${archive}.sha256"
+
+      - name: Prepare Homebrew artifact metadata
+        id: homebrew
+        shell: bash
+        run: |
+          set -euo pipefail
+          arm_archive="cyanos-${GITHUB_REF_NAME}-aarch64-apple-darwin.tar.gz"
+          x86_archive="cyanos-${GITHUB_REF_NAME}-x86_64-apple-darwin.tar.gz"
+          {
+            echo "darwin_arm_sha=$(awk '{print $1}' "dist/${arm_archive}.sha256")"
+            echo "darwin_x86_sha=$(awk '{print $1}' "dist/${x86_archive}.sha256")"
+            echo "darwin_arm_url=https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${arm_archive}"
+            echo "darwin_x86_url=https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${x86_archive}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+
+  homebrew:
+    name: Update Homebrew tap
+    needs: release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Require Homebrew tap token
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: test -n "${HOMEBREW_TAP_TOKEN}"
+
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: johnsonlee/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update formula
+        shell: bash
+        env:
+          DARWIN_ARM_URL: ${{ needs.release.outputs.darwin_arm_url }}
+          DARWIN_ARM_SHA: ${{ needs.release.outputs.darwin_arm_sha }}
+          DARWIN_X86_URL: ${{ needs.release.outputs.darwin_x86_url }}
+          DARWIN_X86_SHA: ${{ needs.release.outputs.darwin_x86_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p homebrew-tap/Formula
+          {
+            printf '%s\n' 'class Cyanos < Formula'
+            printf '%s\n' '  desc "Coding agent CLI that turns command-line intent into working product"'
+            printf '%s\n' '  homepage "https://github.com/johnsonlee/cyanos"'
+            printf '%s\n' '  license "Apache-2.0"'
+            printf '%s\n' ''
+            printf '%s\n' '  if Hardware::CPU.arm?'
+            printf '%s\n' "    url \"${DARWIN_ARM_URL}\""
+            printf '%s\n' "    sha256 \"${DARWIN_ARM_SHA}\""
+            printf '%s\n' '  else'
+            printf '%s\n' "    url \"${DARWIN_X86_URL}\""
+            printf '%s\n' "    sha256 \"${DARWIN_X86_SHA}\""
+            printf '%s\n' '  end'
+            printf '%s\n' ''
+            printf '%s\n' '  def install'
+            printf '%s\n' '    bin.install "cyanos"'
+            printf '%s\n' '  end'
+            printf '%s\n' ''
+            printf '%s\n' '  test do'
+            printf '%s\n' '    assert_match "Usage:", shell_output("#{bin}/cyanos --help")'
+            printf '%s\n' '  end'
+            printf '%s\n' 'end'
+          } > homebrew-tap/Formula/cyanos.rb
+
+      - name: Commit formula update
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/cyanos.rb
+          git commit -m "Update cyanos to ${GITHUB_REF_NAME}"
+          git push
