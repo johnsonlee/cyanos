@@ -1,0 +1,10 @@
+msrv = "1.85"
+avoid-breaking-exported-api = false
+allow-dbg-in-tests = false
+allow-expect-in-tests = false
+allow-panic-in-tests = false
+allow-print-in-tests = false
+allow-unwrap-in-tests = false
+cognitive-complexity-threshold = 20
+too-many-arguments-threshold = 5
+type-complexity-threshold = 200

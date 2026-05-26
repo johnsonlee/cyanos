@@ -1,0 +1,90 @@
+[package]
+name = "cyanos"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "A coding agent CLI that turns command-line user intent into working product."
+repository = "https://github.com/johnsonlee/cyanos"
+homepage = "https://github.com/johnsonlee/cyanos"
+readme = "README.md"
+keywords = ["agent", "automation", "cli", "coding"]
+categories = ["command-line-utilities", "development-tools"]
+publish = false
+
+[workspace]
+members = ["xtask"]
+default-members = ["."]
+resolver = "3"
+
+[[bin]]
+name = "cyanos"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints.rust]
+ambiguous_negative_literals = "warn"
+future_incompatible = { level = "deny", priority = -1 }
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+rust_2018_idioms = { level = "deny", priority = -1 }
+trivial_numeric_casts = "warn"
+unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "warn"
+unreachable_pub = "deny"
+unused_crate_dependencies = "deny"
+unused_lifetimes = "warn"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+allow_attributes_without_reason = "warn"
+as_pointer_underscore = "warn"
+assertions_on_result_states = "warn"
+clone_on_ref_ptr = "warn"
+dbg_macro = "deny"
+default_trait_access = "allow"
+deref_by_slicing = "warn"
+disallowed_script_idents = "warn"
+empty_drop = "warn"
+empty_enum_variants_with_brackets = "warn"
+empty_structs_with_brackets = "warn"
+enum_glob_use = "deny"
+expect_used = "deny"
+exit = "deny"
+fn_to_numeric_cast_any = "warn"
+if_then_some_else_none = "warn"
+indexing_slicing = "deny"
+literal_string_with_formatting_args = "allow"
+map_err_ignore = "warn"
+missing_const_for_fn = "allow"
+module_name_repetitions = "allow"
+panic = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+redundant_type_annotations = "warn"
+renamed_function_params = "warn"
+redundant_pub_crate = "allow"
+semicolon_outside_block = "warn"
+str_to_string = "warn"
+todo = "deny"
+trivially_copy_pass_by_ref = "allow"
+undocumented_unsafe_blocks = "warn"
+unimplemented = "deny"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+unneeded_field_pattern = "warn"
+unused_result_ok = "warn"
+unwrap_used = "deny"
+wildcard_imports = "deny"
